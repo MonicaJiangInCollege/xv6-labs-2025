@@ -105,3 +105,23 @@ sys_uptime(void)
   release(&tickslock);
   return xticks;
 }
+
+uint64
+sys_interpose(void)
+{
+  uint64 mask;
+  char path[MAXPATH];
+  struct proc *p = myproc();
+
+  argaddr(0, &mask);
+
+  // 正确读取第二个路径参数：3个参数，读到局部缓冲区
+  if(argstr(1, path, MAXPATH) < 0)
+    return -1;
+
+  // 保存掩码和允许路径到进程结构体
+  p->syscall_mask = mask;
+  safestrcpy(p->allowed_path, path, MAXPATH);
+
+  return 0;
+}

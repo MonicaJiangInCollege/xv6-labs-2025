@@ -6,6 +6,7 @@
 #include "proc.h"
 #include "syscall.h"
 #include "defs.h"
+extern uint64 sys_interpose(void); 
 
 // Fetch the uint64 at addr from the current process.
 int
@@ -126,6 +127,7 @@ static uint64 (*syscalls[])(void) = {
 [SYS_link]    sys_link,
 [SYS_mkdir]   sys_mkdir,
 [SYS_close]   sys_close,
+[SYS_interpose] sys_interpose,
 };
 
 void
@@ -135,6 +137,26 @@ syscall(void)
   struct proc *p = myproc();
 
   num = p->trapframe->a7;
+
+if(p->syscall_mask & (1L << num)){
+  if(num == SYS_open){
+    char path[MAXPATH];
+    int r = argstr(0, path, MAXPATH);
+    printf("[DBG] pid=%d open argstr_ret=%d path='%s' allowed='%s'\n",
+           p->pid, r, path, p->allowed_path);
+    if(r >= 0 && strncmp(path, p->allowed_path, MAXPATH) == 0){
+      // 放行
+    } else {
+      printf("[DBG] REJECT open\n");
+      p->trapframe->a0 = -1;
+      return;
+    }
+  } else {
+    p->trapframe->a0 = -1;
+    return;
+  }
+}
+
   if(num > 0 && num < NELEM(syscalls) && syscalls[num]) {
     // Use num to lookup the system call function for num, call it,
     // and store its return value in p->trapframe->a0

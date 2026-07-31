@@ -286,6 +286,8 @@ kfork(void)
   np->cwd = idup(p->cwd);
 
   safestrcpy(np->name, p->name, sizeof(p->name));
+  np->syscall_mask = p->syscall_mask;
+  safestrcpy(np->allowed_path, p->allowed_path, MAXPATH); // 新增：继承允许路径 
 
   pid = np->pid;
 

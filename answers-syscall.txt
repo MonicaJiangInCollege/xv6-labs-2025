@@ -1,0 +1,32 @@
+问题1：哪个函数调用了syscall？
+Looking at the backtrace output, which function called syscall?
+答：
+调用syscall的是usertrap函数（定义在kernel/trap.c中）。用户态执行ecall指令触发陷入后，硬件先跳转到trampoline保存上下文，再调用usertrap处理用户陷阱；usertrap判断异常是系统调用后，就会调用syscall函数进行分发。
+
+
+问题2：p->trapframe->a7的值和含义
+What is the value of p->trapframe->a7 and what does that value represent? (Hint: look at user/init.c, the first user program xv6 starts, and its compiled assembly user/init.asm.)
+答：
+值=0xf.这个值是系统调用编号system call number。RISC-V的系统调用约定，用户程序执行ecall前，会把要调用的系统调用编号存入a7寄存器；陷入内核后，所有寄存器会被保存到进程的trapframe中，内核通过读取trapframe->a7来判断用户请求的是哪个系统调用。
+
+
+问题3：进入内核前CPU的运行模式What was the previous mode that the CPU was in?
+答：CPU 之前处于用户模式（User Mode）。因为sstatus寄存器的第8位是SPP位（Supervisor Previous Privilege），用于记录进入内核前的特权等级，SPP=0表示之前是用户模式。
+
+问题4：内核崩溃的汇编指令与num对应的寄存器Write down the assembly instruction the kernel is panicing at. Which register corresponds to the variable num?
+
+把框起来的语句改成num = * (int *) 0;再次编译执行后出现panic
+
+故障地址sepc = 0x80001cf8
+故障原因：内核态执行从虚拟地址0读取内存，触发 Load page fault（scause=13）
+xv6内核异常走kerneltrap，内核页错误不自动修复，直接panic崩溃；用户态页错误才会交给usertrap处理
+
+
+问题5：内核为什么会崩溃？Why does the kernel crash? Hint: look at figure 3-3 in the text; is address 0 mapped in the kernel address space? Is that confirmed by the value in scause above? (See description of scause in RISC-V privileged instructions)
+答：
+内核崩溃的原因是内核态访问了未映射的虚拟地址 0，触发了加载页错误。
+
+问题6：崩溃时运行的进程名和 PID What is the name of the process that was running when the kernel paniced? What is its process id (pid)?
+
+答：
+进程名：init        pid：1
