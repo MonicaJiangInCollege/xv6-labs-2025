@@ -23,10 +23,19 @@ struct {
   struct run *freelist;
 } kmem;
 
+#define SUPERPG_SIZE (1 << 21)    // 2MB
+#define SUPERPG_PAGES (SUPERPG_SIZE / PGSIZE) // 512 × 4KB
+
+// 预留16块2MB、强制2MB对齐的物理内存；数量足够跑 pgtbltest
+char super_pool[16][SUPERPG_SIZE] __attribute__((aligned(SUPERPG_SIZE)));
+int super_used[16] = {0};  // 0=空闲，1=已分配
+struct spinlock superlock; // 保护超级页池并发
+
 void
 kinit()
 {
   initlock(&kmem.lock, "kmem");
+  initlock(&superlock, "superpool"); // 新增锁
   freerange(end, (void*)PHYSTOP);
 }
 
@@ -79,4 +88,45 @@ kalloc(void)
   if(r)
     memset((char*)r, 5, PGSIZE); // fill with junk
   return (void*)r;
+}
+
+// 返回2MB对齐的整块物理内存；失败返回0
+void*
+superalloc(void)
+{
+  acquire(&superlock);
+  for(int i = 0; i < 16; i++){
+    if(super_used[i] == 0){
+      super_used[i] = 1;
+      release(&superlock);
+      memset(super_pool[i], 5, SUPERPG_SIZE); // 填充垃圾，模仿kalloc
+      return super_pool[i];
+    }
+  }
+  release(&superlock);
+  return 0; // 池耗尽
+}
+
+// 只能释放superalloc返回的整块2MB；禁止部分释放
+void
+superfree(void *pa)
+{
+  // 地址必须落在super_pool内、2MB对齐
+  uint64 p = (uint64)pa;
+  if(p % SUPERPG_SIZE != 0){
+    panic("superfree: unaligned");
+  }
+  acquire(&superlock);
+  for(int i = 0; i < 16; i++){
+    if(pa == super_pool[i]){
+      if(super_used[i] == 0)
+        panic("superfree double free");
+      memset(pa, 1, SUPERPG_SIZE); // 模仿kfree填充垃圾
+      super_used[i] = 0;
+      release(&superlock);
+      return;
+    }
+  }
+  release(&superlock);
+  panic("superfree: not a superpage");
 }

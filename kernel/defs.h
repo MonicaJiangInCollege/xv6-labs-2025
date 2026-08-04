@@ -67,6 +67,9 @@ void*           kalloc(void);
 void            kfree(void *);
 void            kinit(void);
 
+void*           superalloc(void);
+void            superfree(void*);
+
 // log.c
 void            initlog(int, struct superblock*);
 void            log_write(struct buf*);
@@ -191,6 +194,7 @@ void            vmprint(pagetable_t);
 #ifdef LAB_PGTBL
 pte_t*          pgpte(pagetable_t, uint64);
 #endif
+uint64          sys_kpgtbl(void);
 
 // plic.c
 void            plicinit(void);

@@ -1,0 +1,35 @@
+Q1：For every page table entry in the print_pgtbl output, explain what it logically contains and what its permission bits are. Figure 3.4 in the xv6 book might be helpful, although note that the figure might have a slightly different set of pages than process that's being inspected here. Note that xv6 doesn't place the virtual pages consecutively in physical memory.针对print_pgtbl输出里的每一条页表项，解释它逻辑上存储了什么内容，以及它的权限位分别是什么
+
+A1：va 0x0000000000000000 pte 0x21FC885B pa 0x87F22000 perm 0x5B 
+0x5B = 0b01011011 
+所以：V (1), R (1), W (0), X (1), U (1) 
+含义：虚拟地址 0，用户可读、可执行、不可写；对应进程用户代码段；有效映射，映射到物理页0x87F22000。
+va 0x0000000000001000 pte 0x21FC7C5B pa 0x87F1F000 perm 0x5B 
+同样代码段，可读可执行不可写，映射到物理页0x87F1F000。
+va 0x0000000000002000 pte 0x21FC7817 pa 0x87F1E000 perm 0x17 
+0x17 = 0b00010111 
+所以：V,R,W,U；X 关闭。用户可读可写，不可执行。
+va 0x0000000000003000 pte 0x21FC7407 pa 0x87F1D000 perm 0x7 
+0x7 = 0b00000111
+所以：V,R,W；没有 PTE_U
+这个页用户不能访问，是内核页。
+va 0x0000000000004000 pte 0x21FC70D7 pa 0x87F1C000 perm 0xD7 
+0xD7 = 0b11010111 
+所以：V,R,W,U,D
+用户可读可写，脏位D置1说明页面被写过，堆区域。
+va 0x5000 ~ 0x9000：pte=0, perm=0 PTE_V=0，无映射，地址空间空洞；访问这些虚拟地址会触发缺页异常。
+va 0x3FFFFF6000 ~ 0x3FFFFFD000：pte=0, perm=0 高地址大片空洞，无映射。
+va 0x3FFFFFE000 pte 0x21FD08C7 pa 0x87F42000 perm 0xC7 
+0xC7 = 0b11000111
+所以：V,R,W,D；无 PTE_U，内核页
+va 0x3FFFFFF000 pte 0x2000184B pa 0x80006000 perm 0x4B 
+0x4B = 0b01001011
+所以：V,R,X,U；用户可读可执行
+
+
+Q2：Which other xv6 system call(s) could be made faster using this shared page? Explain how.还有哪些xv6系统调用可以借助这一共享页面实现加速？说明原理
+A2：除了getpid()之外，uptime()（系统运行时间）和getppid()（如果实现的话）也可以利用共享只读页面进行加速。例如，内核可以定期将系统运行时间更新到共享页面中，用户程序读取该页面即可获得结果，而无需陷入内核。同样，如果在进程创建或fork后把父进程PID写入共享页面，那么getppid()也可以直接在用户态返回该值。这种优化适用于那些只是返回少量由内核维护的数据、不需要权限检查、也不需要复杂计算的系统调用。
+
+
+Q3：For every leaf page in the vmprint output, explain what it logically contains and what its permission bits are, and how it relates to the output of the earlier print_pgtbl() exercise above.这些叶子页分别代表进程地址空间里的什么东西？
+A3：vmprint输出中的每一个leaf page都对应进程地址空间中的一个最终虚拟页到物理页的映射。与中间页表页不同，叶子PTE（页表项）直接映射一个实际的物理页，因此它至少会设置R（Read）、W（Write）、X（Execute）三个权限位中的一个。低地址处的几个叶子页（如0x0、0x1000等） 保存用户程序的代码段、数据段和BSS段。其中代码段通常具有R-X（可读、可执行）权限，而数据段通常具有RW-（可读、可写）权限。 用户栈和堆也映射为叶子页，一般具有RW-（可读、可写）权限。 Trapframe页面位于用户虚拟地址空间的高地址附近，用于保存进程在发生系统调用或异常时的寄存器状态，供内核恢复执行，因此需要内核能够写入。 Trampoline页面位于最高的虚拟地址，保存用户态和内核态切换时执行的trampoline代码，具有R-X（可读、可执行）权限。 vmprint()与print_pgtbl()描述的是同一组地址映射，区别在于print_pgtbl()只打印最终的叶子映射（虚拟地址、物理地址和权限），vmprint()打印完整的三级页表树，不仅包含叶子页，还包含指向下一层页表的中间页表项。因此vmprint()中所有的叶子页都与print_pgtbl()输出中的映射一一对应，而新增的中间节点则展示了RISC-V Sv39页表的三级层次结构。
