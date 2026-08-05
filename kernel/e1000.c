@@ -105,7 +105,26 @@ e1000_transmit(char *buf, int len)
   // so that the caller knows to free buf.
   //
 
-  
+  acquire(&e1000_lock);
+
+  int idx = regs[E1000_TDT];
+  struct tx_desc *desc = &tx_ring[idx];
+
+  if((desc->status & E1000_TXD_STAT_DD) == 0){
+    release(&e1000_lock);
+    return -1;
+  }
+
+  if(desc->addr)
+    kfree((void *)desc->addr);
+
+  desc->addr = (uint64)buf;
+  desc->length = len;
+  desc->cmd = E1000_TXD_CMD_EOP | E1000_TXD_CMD_RS;
+  desc->status = 0;
+  regs[E1000_TDT] = (idx + 1) % TX_RING_SIZE;
+
+  release(&e1000_lock);
   return 0;
 }
 
@@ -119,6 +138,35 @@ e1000_recv(void)
   // Create and deliver a buf for each packet (using net_rx()).
   //
 
+  acquire(&e1000_lock);
+
+  while(1){
+    int idx = (regs[E1000_RDT] + 1) % RX_RING_SIZE;
+    struct rx_desc *desc = &rx_ring[idx];
+
+    if((desc->status & E1000_RXD_STAT_DD) == 0)
+      break;
+
+    char *buf = (char *)desc->addr;
+    int len = desc->length;
+    char *newbuf = kalloc();
+
+    if(newbuf){
+      desc->addr = (uint64)newbuf;
+      desc->status = 0;
+      regs[E1000_RDT] = idx;
+
+      release(&e1000_lock);
+      net_rx(buf, len);
+      acquire(&e1000_lock);
+    } else {
+      // Drop the packet but keep the existing page as this descriptor's buffer.
+      desc->status = 0;
+      regs[E1000_RDT] = idx;
+    }
+  }
+
+  release(&e1000_lock);
 }
 
 void

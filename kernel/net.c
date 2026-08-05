@@ -19,6 +19,37 @@ static uint8 host_mac[ETHADDR_LEN] = { 0x52, 0x55, 0x0a, 0x00, 0x02, 0x02 };
 
 static struct spinlock netlock;
 
+#define UDP_MAX_PORTS 32
+#define UDP_QUEUE_SIZE 16
+
+struct udp_packet {
+  char *buf;
+  int payload_len;
+  uint32 src;
+  uint16 sport;
+};
+
+struct udp_port {
+  int bound;
+  uint16 port;
+  int head;
+  int tail;
+  int count;
+  struct udp_packet queue[UDP_QUEUE_SIZE];
+};
+
+static struct udp_port udp_ports[UDP_MAX_PORTS];
+
+static struct udp_port *
+find_udp_port(uint16 port)
+{
+  for(int i = 0; i < UDP_MAX_PORTS; i++){
+    if(udp_ports[i].bound && udp_ports[i].port == port)
+      return &udp_ports[i];
+  }
+  return 0;
+}
+
 void
 netinit(void)
 {
@@ -34,10 +65,32 @@ netinit(void)
 uint64
 sys_bind(void)
 {
-  //
-  // Your code here.
-  //
+  int port;
 
+  argint(0, &port);
+  if(port < 0 || port > 0xffff)
+    return -1;
+
+  acquire(&netlock);
+
+  if(find_udp_port(port)){
+    release(&netlock);
+    return 0;
+  }
+
+  for(int i = 0; i < UDP_MAX_PORTS; i++){
+    if(!udp_ports[i].bound){
+      udp_ports[i].bound = 1;
+      udp_ports[i].port = port;
+      udp_ports[i].head = 0;
+      udp_ports[i].tail = 0;
+      udp_ports[i].count = 0;
+      release(&netlock);
+      return 0;
+    }
+  }
+
+  release(&netlock);
   return -1;
 }
 
@@ -49,10 +102,29 @@ sys_bind(void)
 uint64
 sys_unbind(void)
 {
-  //
-  // Optional: Your code here.
-  //
+  int port;
 
+  argint(0, &port);
+  if(port < 0 || port > 0xffff)
+    return -1;
+
+  acquire(&netlock);
+  struct udp_port *up = find_udp_port(port);
+  if(up == 0){
+    release(&netlock);
+    return -1;
+  }
+
+  while(up->count > 0){
+    struct udp_packet *pkt = &up->queue[up->head];
+    kfree(pkt->buf);
+    up->head = (up->head + 1) % UDP_QUEUE_SIZE;
+    up->count--;
+  }
+
+  up->bound = 0;
+  wakeup(up);
+  release(&netlock);
   return 0;
 }
 
@@ -74,10 +146,65 @@ sys_unbind(void)
 uint64
 sys_recv(void)
 {
-  //
-  // Your code here.
-  //
-  return -1;
+  struct proc *p = myproc();
+  int dport;
+  uint64 srcaddr;
+  uint64 sportaddr;
+  uint64 bufaddr;
+  int maxlen;
+
+  argint(0, &dport);
+  argaddr(1, &srcaddr);
+  argaddr(2, &sportaddr);
+  argaddr(3, &bufaddr);
+  argint(4, &maxlen);
+
+  if(dport < 0 || dport > 0xffff || maxlen < 0)
+    return -1;
+
+  acquire(&netlock);
+  struct udp_port *up = find_udp_port(dport);
+  if(up == 0){
+    release(&netlock);
+    return -1;
+  }
+
+  while(up->bound && up->count == 0){
+    sleep(up, &netlock);
+    if(killed(p)){
+      release(&netlock);
+      return -1;
+    }
+  }
+
+  if(!up->bound){
+    release(&netlock);
+    return -1;
+  }
+
+  struct udp_packet pkt = up->queue[up->head];
+  up->head = (up->head + 1) % UDP_QUEUE_SIZE;
+  up->count--;
+  release(&netlock);
+
+  int n = pkt.payload_len;
+  if(n > maxlen)
+    n = maxlen;
+
+  struct eth *eth = (struct eth *)pkt.buf;
+  struct ip *ip = (struct ip *)(eth + 1);
+  struct udp *udp = (struct udp *)(ip + 1);
+  char *payload = (char *)(udp + 1);
+
+  if(copyout(p->pagetable, srcaddr, (char *)&pkt.src, sizeof(pkt.src)) < 0 ||
+     copyout(p->pagetable, sportaddr, (char *)&pkt.sport, sizeof(pkt.sport)) < 0 ||
+     copyout(p->pagetable, bufaddr, payload, n) < 0){
+    kfree(pkt.buf);
+    return -1;
+  }
+
+  kfree(pkt.buf);
+  return n;
 }
 
 // This code is lifted from FreeBSD's ping.c, and is copyright by the Regents
@@ -174,7 +301,10 @@ sys_send(void)
     return -1;
   }
 
-  e1000_transmit(buf, total);
+  if(e1000_transmit(buf, total) < 0){
+    kfree(buf);
+    return -1;
+  }
 
   return 0;
 }
@@ -191,7 +321,54 @@ ip_rx(char *buf, int len)
   //
   // Your code here.
   //
-  
+
+  if(len < sizeof(struct eth) + sizeof(struct ip) + sizeof(struct udp)){
+    kfree(buf);
+    return;
+  }
+
+  struct eth *eth = (struct eth *)buf;
+  struct ip *ip = (struct ip *)(eth + 1);
+  if(ip->ip_p != IPPROTO_UDP){
+    kfree(buf);
+    return;
+  }
+
+  int ip_len = ntohs(ip->ip_len);
+  if(ip_len < sizeof(struct ip) + sizeof(struct udp) ||
+     ip_len > len - sizeof(struct eth)){
+    kfree(buf);
+    return;
+  }
+
+  struct udp *udp = (struct udp *)(ip + 1);
+  int udp_len = ntohs(udp->ulen);
+  if(udp_len < sizeof(struct udp) ||
+     udp_len > ip_len - sizeof(struct ip)){
+    kfree(buf);
+    return;
+  }
+
+  uint16 dport = ntohs(udp->dport);
+  int payload_len = udp_len - sizeof(struct udp);
+
+  acquire(&netlock);
+  struct udp_port *up = find_udp_port(dport);
+  if(up == 0 || up->count == UDP_QUEUE_SIZE){
+    release(&netlock);
+    kfree(buf);
+    return;
+  }
+
+  struct udp_packet *pkt = &up->queue[up->tail];
+  pkt->buf = buf;
+  pkt->payload_len = payload_len;
+  pkt->src = ntohl(ip->ip_src);
+  pkt->sport = ntohs(udp->sport);
+  up->tail = (up->tail + 1) % UDP_QUEUE_SIZE;
+  up->count++;
+  wakeup(up);
+  release(&netlock);
 }
 
 //
