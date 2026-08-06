@@ -6,7 +6,12 @@
 #include "proc.h"
 #include "defs.h"
 
+#ifdef LAB_LOCK
+struct rwspinlock tickslock;
+struct spinlock tickssleep;
+#else
 struct spinlock tickslock;
+#endif
 uint ticks;
 
 extern char trampoline[], uservec[];
@@ -19,7 +24,12 @@ extern int devintr();
 void
 trapinit(void)
 {
+#ifdef LAB_LOCK
+  initrwlock(&tickslock);
+  initlock(&tickssleep, "time");
+#else
   initlock(&tickslock, "time");
+#endif
 }
 
 // set up to take exceptions and traps while in the kernel.
@@ -165,10 +175,19 @@ void
 clockintr()
 {
   if(cpuid() == 0){
+#ifdef LAB_LOCK
+    acquire(&tickssleep);
+    write_acquire(&tickslock);
+    ticks++;
+    wakeup(&ticks);
+    write_release(&tickslock);
+    release(&tickssleep);
+#else
     acquire(&tickslock);
     ticks++;
     wakeup(&ticks);
     release(&tickslock);
+#endif
   }
 
   // ask for the next timer interrupt. this also clears

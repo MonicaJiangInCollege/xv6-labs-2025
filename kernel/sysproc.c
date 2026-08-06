@@ -69,12 +69,31 @@ uint64
 sys_pause(void)
 {
   int n;
-  uint ticks0;
+  uint ticks0, now;
 
 
   argint(0, &n);
   if(n < 0)
     n = 0;
+#ifdef LAB_LOCK
+  acquire(&tickssleep);
+  read_acquire(&tickslock);
+  ticks0 = ticks;
+  read_release(&tickslock);
+  for(;;){
+    read_acquire(&tickslock);
+    now = ticks;
+    read_release(&tickslock);
+    if(now - ticks0 >= n)
+      break;
+    if(killed(myproc())){
+      release(&tickssleep);
+      return -1;
+    }
+    sleep(&ticks, &tickssleep);
+  }
+  release(&tickssleep);
+#else
   acquire(&tickslock);
   ticks0 = ticks;
   while(ticks - ticks0 < n){
@@ -85,6 +104,7 @@ sys_pause(void)
     sleep(&ticks, &tickslock);
   }
   release(&tickslock);
+#endif
   return 0;
 }
 
@@ -135,9 +155,15 @@ sys_uptime(void)
 {
   uint xticks;
 
+#ifdef LAB_LOCK
+  read_acquire(&tickslock);
+  xticks = ticks;
+  read_release(&tickslock);
+#else
   acquire(&tickslock);
   xticks = ticks;
   release(&tickslock);
+#endif
   return xticks;
 }
 

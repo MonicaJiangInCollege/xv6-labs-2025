@@ -157,7 +157,12 @@ void            syscall();
 extern uint     ticks;
 void            trapinit(void);
 void            trapinithart(void);
+#ifdef LAB_LOCK
+extern struct rwspinlock tickslock;
+extern struct spinlock tickssleep;
+#else
 extern struct spinlock tickslock;
+#endif
 void            prepare_return(void);
 
 // uart.c
