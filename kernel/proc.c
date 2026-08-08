@@ -145,6 +145,8 @@ found:
   memset(&p->context, 0, sizeof(p->context));
   p->context.ra = (uint64)forkret;
   p->context.sp = p->kstack + PGSIZE;
+  memset(p->vmas, 0, sizeof(p->vmas));
+  p->mmapaddr = TRAPFRAME;
 
   return p;
 }
@@ -162,6 +164,8 @@ freeproc(struct proc *p)
     proc_freepagetable(p->pagetable, p->sz);
   p->pagetable = 0;
   p->sz = 0;
+  memset(p->vmas, 0, sizeof(p->vmas));
+  p->mmapaddr = TRAPFRAME;
   p->pid = 0;
   p->parent = 0;
   p->name[0] = 0;
@@ -241,6 +245,8 @@ growproc(int n)
 
   sz = p->sz;
   if(n > 0){
+    if(sz + n >= p->mmapaddr)
+      return -1;
     if((sz = uvmalloc(p->pagetable, sz, sz + n, PTE_W)) == 0) {
       return -1;
     }
@@ -272,6 +278,13 @@ kfork(void)
     return -1;
   }
   np->sz = p->sz;
+  np->mmapaddr = p->mmapaddr;
+  for(i = 0; i < NVMA; i++){
+    if(p->vmas[i].used){
+      np->vmas[i] = p->vmas[i];
+      filedup(np->vmas[i].file);
+    }
+  }
 
   // copy saved user registers.
   *(np->trapframe) = *(p->trapframe);
@@ -327,6 +340,11 @@ kexit(int status)
 
   if(p == initproc)
     panic("init exiting");
+
+  for(int i = 0; i < NVMA; i++){
+    if(p->vmas[i].used)
+      mmapunmap(p, p->vmas[i].addr, p->vmas[i].len);
+  }
 
   // Close all open files.
   for(int fd = 0; fd < NOFILE; fd++){

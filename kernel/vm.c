@@ -7,6 +7,9 @@
 #include "spinlock.h"
 #include "proc.h"
 #include "fs.h"
+#include "sleeplock.h"
+#include "file.h"
+#include "fcntl.h"
 
 /*
  * the kernel's page table.
@@ -386,7 +389,7 @@ copyin(pagetable_t pagetable, char *dst, uint64 srcva, uint64 len)
     va0 = PGROUNDDOWN(srcva);
     pa0 = walkaddr(pagetable, va0);
     if(pa0 == 0) {
-      if((pa0 = vmfault(pagetable, va0, 0)) == 0) {
+      if((pa0 = vmfault(pagetable, va0, 1)) == 0) {
         return -1;
       }
     }
@@ -445,8 +448,137 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
   }
 }
 
+static struct vma*
+findvma(struct proc *p, uint64 va)
+{
+  for(int i = 0; i < NVMA; i++){
+    struct vma *v = &p->vmas[i];
+    if(v->used && va >= v->addr && va < v->addr + v->len)
+      return v;
+  }
+  return 0;
+}
+
+static int
+mmapwriteback(struct proc *p, struct vma *v, uint64 addr, uint64 len)
+{
+  uint64 end = addr + len;
+  int max = ((MAXOPBLOCKS - 1 - 1 - 2) / 2) * BSIZE;
+
+  for(uint64 a = addr; a < end; a += PGSIZE){
+    pte_t *pte = walk(p->pagetable, a, 0);
+    if(pte == 0 || (*pte & PTE_V) == 0)
+      continue;
+
+    uint64 pa = PTE2PA(*pte);
+    uint64 off = v->offset + (a - v->addr);
+    uint64 done = 0;
+
+    while(done < PGSIZE){
+      begin_op();
+      ilock(v->file->ip);
+
+      if(off + done >= v->file->ip->size){
+        iunlock(v->file->ip);
+        end_op();
+        break;
+      }
+
+      uint64 n64 = PGSIZE - done;
+      if(n64 > max)
+        n64 = max;
+      if(n64 > v->file->ip->size - (off + done))
+        n64 = v->file->ip->size - (off + done);
+      int n = n64;
+
+      int r = writei(v->file->ip, 0, pa + done, off + done, n);
+      iunlock(v->file->ip);
+      end_op();
+
+      if(r != n)
+        return -1;
+      done += r;
+    }
+  }
+  return 0;
+}
+
+int
+mmapunmap(struct proc *p, uint64 addr, uint64 len)
+{
+  if(len == 0 || addr % PGSIZE)
+    return -1;
+
+  len = PGROUNDUP(len);
+  struct vma *v = findvma(p, addr);
+  if(v == 0 || addr + len > v->addr + v->len)
+    return -1;
+
+  if((v->flags & MAP_SHARED) && (v->prot & PROT_WRITE)){
+    if(mmapwriteback(p, v, addr, len) < 0)
+      return -1;
+  }
+
+  uvmunmap(p->pagetable, addr, len / PGSIZE, 1);
+
+  if(addr == v->addr && len == v->len){
+    struct file *f = v->file;
+    memset(v, 0, sizeof(*v));
+    fileclose(f);
+  } else if(addr == v->addr){
+    v->addr += len;
+    v->offset += len;
+    v->len -= len;
+  } else if(addr + len == v->addr + v->len){
+    v->len -= len;
+  } else {
+    return -1;
+  }
+  return 0;
+}
+
+static uint64
+mmapfault(struct proc *p, uint64 va, int read)
+{
+  struct vma *v = findvma(p, va);
+  if(v == 0)
+    return 0;
+
+  if(read && (v->prot & PROT_READ) == 0)
+    return 0;
+  if(!read && (v->prot & PROT_WRITE) == 0)
+    return 0;
+
+  va = PGROUNDDOWN(va);
+  if(ismapped(p->pagetable, va))
+    return 0;
+
+  uint64 mem = (uint64)kalloc();
+  if(mem == 0)
+    return 0;
+  memset((void *)mem, 0, PGSIZE);
+
+  ilock(v->file->ip);
+  readi(v->file->ip, 0, mem, v->offset + (va - v->addr), PGSIZE);
+  iunlock(v->file->ip);
+
+  int perm = PTE_U;
+  if(v->prot & PROT_READ)
+    perm |= PTE_R;
+  if(v->prot & PROT_WRITE)
+    perm |= PTE_W | PTE_R;
+  if(v->prot & PROT_EXEC)
+    perm |= PTE_X;
+
+  if(mappages(p->pagetable, va, PGSIZE, mem, perm) != 0){
+    kfree((void *)mem);
+    return 0;
+  }
+  return mem;
+}
+
 // allocate and map user memory if process is referencing a page
-// that was lazily allocated in sys_sbrk().
+// that was lazily allocated by mmap() or sys_sbrk().
 // returns 0 if va is invalid or already mapped, or if
 // out of physical memory, and physical address if successful.
 uint64
@@ -454,6 +586,12 @@ vmfault(pagetable_t pagetable, uint64 va, int read)
 {
   uint64 mem;
   struct proc *p = myproc();
+
+  if(va >= p->sz){
+    mem = mmapfault(p, va, read);
+    if(mem != 0)
+      return mem;
+  }
 
   if (va >= p->sz)
     return 0;
