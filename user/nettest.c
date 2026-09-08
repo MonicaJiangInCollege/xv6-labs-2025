@@ -786,8 +786,8 @@ dns()
   memset(obuf, 0, N);
   memset(ibuf, 0, N);
   
-  // 8.8.8.8: google's name server
-  dst = (8 << 24) | (8 << 16) | (8 << 8) | (8 << 0);
+  // QEMU's user-networking DNS proxy.
+  dst = (10 << 24) | (0 << 16) | (2 << 8) | (3 << 0);
 
   len = dns_req(obuf);
   
