@@ -165,6 +165,10 @@ walkaddr(pagetable_t pagetable, uint64 va)
   if((*pte & PTE_U) == 0)
     return 0;
   pa = PTE2PA(*pte);
+#ifdef LAB_PGTBL
+  if(walkpte(pagetable, va, 1) == pte)
+    pa += va & SUPERPG_MASK;
+#endif
   return pa;
 }
 
@@ -401,11 +405,11 @@ uvmunmap(pagetable_t pagetable, uint64 va, uint64 npages, int do_free)
     // 普通4KB页处理
     pte_t *pte = walk(pagetable, a, 0);
 
-    if(pte == 0)
-      panic("uvmunmap: walk");
-
-    if(!(*pte & PTE_V))
-      panic("uvmunmap: not present");
+    // Lazy allocation may leave holes in the address range.
+    if(pte == 0 || !(*pte & PTE_V)){
+      a += PGSIZE;
+      continue;
+    }
 
 
     if(PTE_FLAGS(*pte) == PTE_V)
